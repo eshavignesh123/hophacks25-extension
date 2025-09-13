@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Purchase Page</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8fafc;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .order-confirmation {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .order-confirmation h1 {
+            color: #10b981;
+            margin-bottom: 10px;
+        }
+        .order-details {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .total {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1e293b;
+            text-align: center;
+            margin: 20px 0;
+            padding: 15px;
+            background: #ecfdf5;
+            border-radius: 8px;
+            border: 2px solid #10b981;
+        }
+        .test-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        .test-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .test-btn.primary {
+            background: #10b981;
+            color: white;
+        }
+        .test-btn.secondary {
+            background: #e2e8f0;
+            color: #374151;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="order-confirmation">
+            <h1>Thank You for Your Purchase!</h1>
+            <p>Your order has been successfully processed.</p>
+        </div>
+
+        <div class="order-details">
+            <h3>Order Summary</h3>
+            <div class="item">
+                <span>Test Product 1</span>
+                <span>$12.34</span>
+            </div>
+            <div class="item">
+                <span>Test Product 2</span>
+                <span>$8.67</span>
+            </div>
+            <div class="item">
+                <span>Shipping</span>
+                <span>$5.99</span>
+            </div>
+            <div class="total">
+                Total: $27.00
+            </div>
+        </div>
+
+        <div class="test-buttons">
+            <button type="button" class="test-btn primary" onclick="simulatePurchase(27.00)">Test $27.00 Purchase</button>
+            <button type="button" class="test-btn primary" onclick="simulatePurchase(15.75)">Test $15.75 Purchase</button>
+            <button type="button" class="test-btn primary" onclick="simulatePurchase(99.99)">Test $99.99 Purchase</button>
+            <button type="button" class="test-btn secondary" onclick="resetPage()">Reset Page</button>
+        </div>
+
+        <div style="margin-top: 30px; padding: 20px; background: #fef3c7; border-radius: 8px; border-left: 4px solid #f59e0b;">
+            <h4 style="margin: 0 0 10px 0; color: #92400e;">How to Test the Extension:</h4>
+            <ol style="margin: 0; color: #92400e;">
+                <li>Load the extension in Chrome (chrome://extensions/)</li>
+                <li>Click one of the test purchase buttons above</li>
+                <li>The extension should detect the purchase and show a donation modal</li>
+                <li>Try selecting different nonprofits and making donations</li>
+                <li>Check the extension popup to see your donation statistics</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        function simulatePurchase(amount) {
+            // Update the total amount
+            document.querySelector('.total').textContent = `Total: $${amount.toFixed(2)}`;
+            
+            // Add a class to trigger the extension's detection
+            document.body.classList.add('purchase-complete');
+            
+            // Show a message
+            alert(`Simulated purchase of $${amount.toFixed(2)}. The extension should now show a donation modal!`);
+            
+            // Also trigger a DOM change to help the extension detect it
+            setTimeout(() => {
+                const newDiv = document.createElement('div');
+                newDiv.className = 'order-confirmation';
+                newDiv.innerHTML = '<h1>Order Confirmed!</h1>';
+                document.body.appendChild(newDiv);
+            }, 100);
+            
+            return false; // Prevent any default behavior
+        }
+
+        function resetPage() {
+            document.body.classList.remove('purchase-complete');
+            document.querySelector('.total').textContent = 'Total: $27.00';
+            
+            // Remove any added confirmation divs
+            const confirmations = document.querySelectorAll('.order-confirmation');
+            confirmations.forEach(div => {
+                if (div.innerHTML.includes('Order Confirmed!')) {
+                    div.remove();
+                }
+            });
+            
+            return false; // Prevent any default behavior
+        }
+
+        // Prevent page refresh on button clicks
+        document.addEventListener('DOMContentLoaded', function() {
+            const buttons = document.querySelectorAll('.test-btn');
+            buttons.forEach(button => {
+                button.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+            });
+        });
+    </script>
+</body>
+</html>
