@@ -1,12 +1,70 @@
 import React from "react";
 import { useEffect, useState } from "react";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc, updateDoc, arrayUnion, increment } from "firebase/firestore";
+import "./Popup.css";
+import { auth, db } from "../../firebase-config";
 
 const Popup = () => {
   const [orderTotal, setOrderTotal] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authActionLoading, setAuthActionLoading] = useState(false);
+  const [charitiesInterestedIn, setCharitiesInterestedIn] = useState([]);
+  const [selectedCharity, setSelectedCharity] = useState("");
+  const [charityLoading, setCharityLoading] = useState(false);
+  const [donationLoading, setDonationLoading] = useState(false);
+
+  // ✅ Function to fetch user charity data
+  const fetchUserCharities = async (userId) => {
+    if (!userId) return;
+
+    setCharityLoading(true);
+    try {
+      const userDocRef = doc(db, 'users', userId);
+      const userDoc = await getDoc(userDocRef);
+
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        const charities = userData.charitiesInterestedIn || [];
+        setCharitiesInterestedIn(charities);
+        // Set first charity as default if available
+        if (charities.length > 0) {
+          setSelectedCharity(charities[0]);
+        }
+      } else {
+        console.log('No user document found');
+        setCharitiesInterestedIn([]);
+      }
+    } catch (error) {
+      console.error('Error fetching user charities:', error);
+      setCharitiesInterestedIn([]);
+    } finally {
+      setCharityLoading(false);
+    }
+  };
 
   useEffect(() => {
+    // Set up authentication state listener
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setAuthLoading(false);
+
+      // Fetch user charity data when user is authenticated
+      if (user) {
+        fetchUserCharities(user.uid);
+      } else {
+        setCharitiesInterestedIn([]);
+        setSelectedCharity("");
+      }
+    });
+
     // Fetch the stored order total when popup loads
     const fetchOrderTotal = () => {
       chrome.storage.local.get(["lastOrderTotal", "lastUpdated"], (data) => {
@@ -33,9 +91,10 @@ const Popup = () => {
     // Add listener for storage changes
     chrome.storage.onChanged.addListener(handleStorageChange);
 
-    // Cleanup listener on unmount
+    // Cleanup listeners on unmount
     return () => {
       chrome.storage.onChanged.removeListener(handleStorageChange);
+      unsubscribe();
     };
   }, []);
 
@@ -57,15 +116,33 @@ const Popup = () => {
   };
 
   // ✅ Handle donation action
-  const handleDonate = () => {
-    const donationAmount = getRoundUpAmount();
-    // Here you would integrate with your donation service
-    alert(`Thank you for your ${donationAmount.toFixed(2)} donation!`);
+  const handleDonate = async () => {
+    setDonationLoading(true);
 
-    // Clear the stored total after donation
-    chrome.storage.local.remove(['lastOrderTotal', 'lastUpdated']);
-    setOrderTotal(null);
-    setLastUpdated(null);
+    try {
+      const donationAmount = getRoundUpAmount();
+      const charityMessage = selectedCharity
+        ? `Thank you for your $${donationAmount.toFixed(2)} donation to ${selectedCharity}!`
+        : `Thank you for your $${donationAmount.toFixed(2)} donation!`;
+
+      // Update donation tracking in Firebase if a charity is selected
+      if (selectedCharity) {
+        await updateDonationTracking(selectedCharity, donationAmount);
+      }
+
+      // Here you would integrate with your donation service
+      alert(charityMessage);
+
+      // Clear the stored total after donation
+      chrome.storage.local.remove(['lastOrderTotal', 'lastUpdated']);
+      setOrderTotal(null);
+      setLastUpdated(null);
+    } catch (error) {
+      console.error('Error processing donation:', error);
+      alert('There was an error processing your donation. Please try again.');
+    } finally {
+      setDonationLoading(false);
+    }
   };
 
   // ✅ Format time ago
@@ -83,100 +160,311 @@ const Popup = () => {
     return `${days}d ago`;
   };
 
-  if (loading) {
+  // ✅ Authentication functions
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthActionLoading(true);
+
+    try {
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+    } catch (error) {
+      setAuthError(error.message);
+    } finally {
+      setAuthActionLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      setAuthError(error.message);
+    }
+  };
+
+  const toggleAuthMode = () => {
+    setIsLogin(!isLogin);
+    setAuthError("");
+    setEmail("");
+    setPassword("");
+  };
+
+  // ✅ Function to update donation tracking in Firebase
+  const updateDonationTracking = async (charityName, donationAmount) => {
+    if (!user || !charityName) return;
+
+    try {
+      const userDocRef = doc(db, 'users', user.uid);
+
+      // Get current user document to check if charitiesDonatedTo exists
+      const userDoc = await getDoc(userDocRef);
+
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        const currentDonations = userData.charitiesDonatedTo || {};
+
+        // Get current charity data (array with [account_id, amount])
+        const currentCharityData = currentDonations[charityName];
+
+        if (currentCharityData && Array.isArray(currentCharityData) && currentCharityData.length >= 2) {
+          // Charity exists, update the amount (second element)
+          const accountId = currentCharityData[0]; // Keep existing account ID
+          const currentAmount = currentCharityData[1] || 0;
+          const newAmount = currentAmount + donationAmount;
+
+          // Update with new amount, keeping the same account ID
+          await updateDoc(userDocRef, {
+            [`charitiesDonatedTo.${charityName}`]: [accountId, newAmount]
+          });
+
+          console.log(`Updated donation for ${charityName}: $${newAmount.toFixed(2)} (Account: ${accountId})`);
+        } else {
+          // Charity doesn't exist yet, create new entry with placeholder account ID
+          const placeholderAccountId = `acct_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+          await updateDoc(userDocRef, {
+            [`charitiesDonatedTo.${charityName}`]: [placeholderAccountId, donationAmount]
+          });
+
+          console.log(`Created new donation entry for ${charityName}: $${donationAmount.toFixed(2)} (Account: ${placeholderAccountId})`);
+        }
+      } else {
+        console.error('User document not found');
+      }
+    } catch (error) {
+      console.error('Error updating donation tracking:', error);
+    }
+  };
+
+  if (authLoading || loading) {
     return (
-      <div className="p-4 w-72">
-        <div className="flex items-center justify-center py-8">
-          <div className="text-gray-500">Loading...</div>
+      <div className="popup-container">
+        <div className="loading">
+          <div className="loading-spinner"></div>
+          <div>Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login page if user is not authenticated
+  if (!user) {
+    return (
+      <div className="popup-container">
+        <div className="popup-header">
+          <h1>Round Up 🎉</h1>
+          <p className="header-subtitle">Sign in to start making a difference</p>
+        </div>
+
+        <div className="auth-container">
+          <form onSubmit={handleAuth} className="auth-form">
+            <div className="form-group">
+              <label htmlFor="email">Email</label>
+              <input
+                type="email"
+                id="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter your email"
+                required
+                className="auth-input"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <input
+                type="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                required
+                className="auth-input"
+              />
+            </div>
+
+            {authError && (
+              <div className="auth-error">
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={authActionLoading}
+              className="auth-button"
+            >
+              {authActionLoading ? (
+                <div className="button-loading">
+                  <div className="button-spinner"></div>
+                  {isLogin ? 'Signing in...' : 'Creating account...'}
+                </div>
+              ) : (
+                isLogin ? 'Sign In' : 'Create Account'
+              )}
+            </button>
+          </form>
+
+          <div className="auth-switch">
+            <p>
+              {isLogin ? "Don't have an account?" : "Already have an account?"}
+              <button
+                type="button"
+                onClick={toggleAuthMode}
+                className="auth-switch-button"
+              >
+                {isLogin ? 'Sign up' : 'Sign in'}
+              </button>
+            </p>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="p-4 w-72 bg-white">
+    <div className="popup-container">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-bold text-gray-800">Round Up 🎉</h1>
-        <button
-          onClick={refreshData}
-          className="text-sm text-blue-600 hover:text-blue-800"
-          title="Refresh"
-        >
-          ↻
-        </button>
-      </div>
-
-      {orderTotal !== null ? (
-        <div className="space-y-4">
-          {/* Order Total Display */}
-          <div className="bg-gray-50 p-3 rounded-lg">
-            <div className="text-sm text-gray-600 mb-1">Your order total:</div>
-            <div className="text-2xl font-bold text-gray-800">
-              ${orderTotal.toFixed(2)}
-            </div>
-            {lastUpdated && (
-              <div className="text-xs text-gray-500 mt-1">
-                {getTimeAgo(lastUpdated)}
-              </div>
-            )}
-          </div>
-
-          {/* Donation Suggestion */}
-          <div className="bg-green-50 border border-green-200 p-3 rounded-lg">
-            <div className="text-sm text-green-700 mb-2">
-              Round up for charity?
-            </div>
-            <div className="text-lg font-semibold text-green-800">
-              Donate ${getRoundUpAmount().toFixed(2)}
-            </div>
-            <div className="text-xs text-green-600 mt-1">
-              Every little bit helps! 💚
-            </div>
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex space-x-2">
-            <button
-              onClick={handleDonate}
-              className="flex-1 bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 transition-colors font-medium"
-            >
-              Donate
-            </button>
-            <button
-              onClick={() => {
-                chrome.storage.local.remove(['lastOrderTotal', 'lastUpdated']);
-                setOrderTotal(null);
-                setLastUpdated(null);
-              }}
-              className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              Skip
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="text-center py-8">
-          <div className="text-4xl mb-4">🛒</div>
-          <div className="text-gray-600 mb-4">
-            No recent Amazon orders found
-          </div>
-          <div className="text-sm text-gray-500">
-            Complete a purchase on Amazon and we'll help you round up for charity!
-          </div>
+      <div className="popup-header">
+        <h1>Round Up 🎉</h1>
+        <div className="header-actions">
           <button
             onClick={refreshData}
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            className="refresh-button"
+            title="Refresh"
           >
-            Check Again
+            ↻
+          </button>
+          <button
+            onClick={handleSignOut}
+            className="signout-button"
+            title="Sign Out"
+          >
+            Sign Out
           </button>
         </div>
-      )}
+      </div>
 
-      {/* Footer */}
-      <div className="mt-6 pt-4 border-t border-gray-200">
-        <div className="text-xs text-gray-500 text-center">
-          Round Up Extension • Make every purchase count
+      <div className="popup-content">
+
+        {orderTotal !== null ? (
+          <div className="donation-section">
+            {/* Order Total Display */}
+            <div className="amount-display">
+              <div className="purchase-amount">
+                <span className="label">Your order total:</span>
+                <span className="amount">${orderTotal.toFixed(2)}</span>
+              </div>
+              {lastUpdated && (
+                <div className="time-ago">
+                  {getTimeAgo(lastUpdated)}
+                </div>
+              )}
+            </div>
+
+            {/* Donation Suggestion */}
+            <div className="donation-suggestion">
+              <div className="suggestion-text">
+                Round up for charity?
+              </div>
+              <div className="suggestion-amount">
+                Donate ${getRoundUpAmount().toFixed(2)}
+              </div>
+              <div className="suggestion-subtext">
+                Every little bit helps! 💚
+              </div>
+            </div>
+
+            {/* Charity Selection Dropdown */}
+            {charitiesInterestedIn.length > 0 && (
+              <div className="charity-selection">
+                <label htmlFor="charity-select" className="charity-label">
+                  Choose a charity:
+                </label>
+                <div className="charity-dropdown-container">
+                  <select
+                    id="charity-select"
+                    value={selectedCharity}
+                    onChange={(e) => setSelectedCharity(e.target.value)}
+                    className="charity-dropdown"
+                    disabled={charityLoading}
+                  >
+                    {charitiesInterestedIn.map((charity, index) => (
+                      <option key={index} value={charity}>
+                        {charity}
+                      </option>
+                    ))}
+                  </select>
+                  {charityLoading && (
+                    <div className="charity-loading">
+                      <div className="charity-spinner"></div>
+                    </div>
+                  )}
+                </div>
+                {selectedCharity && (
+                  <div className="selected-charity-info">
+                    <span className="charity-icon">❤️</span>
+                    <span className="charity-name">{selectedCharity}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="action-buttons">
+              <button
+                onClick={handleDonate}
+                className="donate-button"
+                disabled={donationLoading}
+              >
+                {donationLoading ? (
+                  <div className="button-loading">
+                    <div className="button-spinner"></div>
+                    Processing...
+                  </div>
+                ) : (
+                  'Donate'
+                )}
+              </button>
+              <button
+                onClick={() => {
+                  chrome.storage.local.remove(['lastOrderTotal', 'lastUpdated']);
+                  setOrderTotal(null);
+                  setLastUpdated(null);
+                }}
+                className="skip-button"
+              >
+                Skip
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="no-purchase">
+            <div className="no-purchase-icon">🛒</div>
+            <h3>No recent Amazon orders found</h3>
+            <p>
+              Complete a purchase on Amazon and we'll help you round up for charity!
+            </p>
+            <button
+              onClick={refreshData}
+              className="check-again-button"
+            >
+              Check Again
+            </button>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="popup-footer">
+          <p className="footer-text">
+            Round Up Extension • Make every purchase count
+          </p>
         </div>
       </div>
     </div>
